@@ -32,6 +32,17 @@ After push, GitHub Actions will publish a preview build from `custom-software-ro
 5. Add the custom domain `roi.why57.com`.
 6. In Cloudflare DNS, point `roi` at the Pages hostname Cloudflare gives you.
 
+## Cloudflare DNS for the current GitHub Pages setup
+
+The repo is already configured with the custom domain `roi.why57.com` on GitHub Pages.
+
+If you want the site live immediately through Cloudflare without moving hosting yet, add:
+
+- Type: `CNAME`
+- Name: `roi`
+- Target: `gera3d.github.io`
+- Proxy status: `Proxied` or `DNS only` both work, but start with `DNS only` if you want the cleanest first verification
+
 Cloudflare reference docs:
 
 - Headers: `https://developers.cloudflare.com/pages/configuration/headers/`

@@ -33,6 +33,21 @@ The calculator also writes a first-party cookie on `.why57.com`:
 
 The cookie contains a compact JSON payload with the latest calculator result and attribution context so the main site, a future booking page, or a backend endpoint can read it and attach ROI context to leads.
 
+## Optional lead capture endpoint
+
+If you later provide an endpoint, set it in [index.html](/Users/gerayeremin/Documents/New%20project/custom-software-roi-calculator/index.html):
+
+- `window.ROI_INTEGRATIONS.leadCaptureEndpoint`
+
+When configured, the calculator will send a best-effort JSON POST on booking CTA clicks containing:
+
+- `event_type`
+- `sent_at`
+- `context`
+- `detail`
+
+The booking flow does not block on this request.
+
 ## Remaining account-side setup
 
 These items cannot be fully completed from this static GitHub Pages repo alone, but the site is prepared for them:
@@ -56,3 +71,12 @@ These items cannot be fully completed from this static GitHub Pages repo alone, 
 
 4. Session replay / UX tooling
    If you add Microsoft Clarity or another replay tool later, keep the same session and attribution fields aligned with the calculator events.
+
+## Ready-to-use assets
+
+Two helper assets are included in this repo:
+
+- [why57-main-site-bridge.js](/Users/gerayeremin/Documents/New%20project/custom-software-roi-calculator/integration-assets/why57-main-site-bridge.js)
+- [lead-capture-endpoint.example.mjs](/Users/gerayeremin/Documents/New%20project/custom-software-roi-calculator/integration-assets/lead-capture-endpoint.example.mjs)
+
+These are not active on the live `why57.com` site yet because that codebase is not available in this workspace.

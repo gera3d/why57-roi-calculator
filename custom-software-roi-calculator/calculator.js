@@ -35,6 +35,7 @@ const STORAGE_KEYS = {
 const ROI_INTEGRATIONS = window.ROI_INTEGRATIONS || {};
 const CROSS_SUBDOMAIN_COOKIE_NAME = ROI_INTEGRATIONS.crossSubdomainCookieName || "why57_roi_context";
 const CROSS_SUBDOMAIN_COOKIE_DOMAIN = ROI_INTEGRATIONS.crossSubdomainCookieDomain || "why57.com";
+const LEAD_CAPTURE_ENDPOINT = ROI_INTEGRATIONS.leadCaptureEndpoint || "";
 
 const DEFAULT_INPUT = {
   projectType: "workflow_automation",
@@ -262,6 +263,42 @@ function trackLeadGenerated(detail = {}) {
   }
 
   document.dispatchEvent(new CustomEvent("roi-calculator:lead", { detail: payload }));
+}
+
+function sendLeadCapture(eventType, detail = {}) {
+  if (!LEAD_CAPTURE_ENDPOINT || !latestContext) return;
+
+  const payload = {
+    event_type: eventType,
+    sent_at: new Date().toISOString(),
+    context: latestContext,
+    detail: compactObject(detail)
+  };
+
+  const body = JSON.stringify(payload);
+
+  try {
+    if (navigator.sendBeacon) {
+      const blob = new Blob([body], { type: "application/json" });
+      navigator.sendBeacon(LEAD_CAPTURE_ENDPOINT, blob);
+      return;
+    }
+  } catch (_error) {
+    // Fall back to fetch when sendBeacon is unavailable or blocked.
+  }
+
+  fetch(LEAD_CAPTURE_ENDPOINT, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body,
+    keepalive: true,
+    mode: "cors",
+    credentials: "omit"
+  }).catch(() => {
+    // Best-effort delivery only. The booking flow should never fail because analytics or lead capture is down.
+  });
 }
 
 function getFormValue(name) {
@@ -662,6 +699,7 @@ function initEvents() {
   ctaLink.addEventListener("click", () => {
     trackLeadGenerated({ cta_location: "results_panel" });
     trackEvent(TRACKED_EVENTS.ctaClicked, { cta_location: "results_panel" });
+    sendLeadCapture("generate_lead", { cta_location: "results_panel" });
   });
 
   document.querySelectorAll('a[href="https://calendar.app.google/93NLV73sQd1DXuUB6"]').forEach((link) => {
@@ -669,6 +707,7 @@ function initEvents() {
     link.addEventListener("click", () => {
       trackLeadGenerated({ cta_location: "page" });
       trackEvent(TRACKED_EVENTS.ctaClicked, { cta_location: "page" });
+      sendLeadCapture("generate_lead", { cta_location: "page" });
     });
   });
 

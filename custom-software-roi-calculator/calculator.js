@@ -26,6 +26,16 @@ const TRACKED_EVENTS = {
   ctaClicked: "cta_clicked"
 };
 
+const STORAGE_KEYS = {
+  sessionId: "why57_roi_session_id_v1",
+  attribution: "why57_roi_attribution_v1",
+  context: "why57_roi_context_v1"
+};
+
+const ROI_INTEGRATIONS = window.ROI_INTEGRATIONS || {};
+const CROSS_SUBDOMAIN_COOKIE_NAME = ROI_INTEGRATIONS.crossSubdomainCookieName || "why57_roi_context";
+const CROSS_SUBDOMAIN_COOKIE_DOMAIN = ROI_INTEGRATIONS.crossSubdomainCookieDomain || "why57.com";
+
 const DEFAULT_INPUT = {
   projectType: "workflow_automation",
   monthlySaaSSpend: 1800,
@@ -58,6 +68,133 @@ let currentStep = 0;
 let hasStarted = false;
 let hasCompleted = false;
 let lastTrackedBucket = "";
+let latestContext = null;
+
+function createId() {
+  if (window.crypto?.randomUUID) {
+    return window.crypto.randomUUID();
+  }
+
+  return `roi_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
+
+function getSessionId() {
+  const existing = sessionStorage.getItem(STORAGE_KEYS.sessionId);
+  if (existing) return existing;
+
+  const created = createId();
+  sessionStorage.setItem(STORAGE_KEYS.sessionId, created);
+  return created;
+}
+
+function cleanParamValue(value) {
+  if (value == null) return undefined;
+  const normalized = String(value).trim();
+  return normalized === "" ? undefined : normalized;
+}
+
+function pickCampaignParams(searchParams) {
+  return {
+    utm_source: cleanParamValue(searchParams.get("utm_source")),
+    utm_medium: cleanParamValue(searchParams.get("utm_medium")),
+    utm_campaign: cleanParamValue(searchParams.get("utm_campaign")),
+    utm_content: cleanParamValue(searchParams.get("utm_content")),
+    utm_term: cleanParamValue(searchParams.get("utm_term")),
+    gclid: cleanParamValue(searchParams.get("gclid")),
+    gbraid: cleanParamValue(searchParams.get("gbraid")),
+    wbraid: cleanParamValue(searchParams.get("wbraid")),
+    msclkid: cleanParamValue(searchParams.get("msclkid"))
+  };
+}
+
+function getAttributionContext() {
+  const cached = sessionStorage.getItem(STORAGE_KEYS.attribution);
+  if (cached) {
+    try {
+      return JSON.parse(cached);
+    } catch (_error) {
+      sessionStorage.removeItem(STORAGE_KEYS.attribution);
+    }
+  }
+
+  const searchParams = new URLSearchParams(window.location.search);
+  const attribution = {
+    session_id: getSessionId(),
+    landing_page: window.location.href,
+    page_path: window.location.pathname,
+    page_title: document.title,
+    referrer: cleanParamValue(document.referrer),
+    first_seen_at: new Date().toISOString(),
+    ...pickCampaignParams(searchParams)
+  };
+
+  sessionStorage.setItem(STORAGE_KEYS.attribution, JSON.stringify(attribution));
+  return attribution;
+}
+
+function compactObject(value) {
+  return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined && entry !== ""));
+}
+
+function buildLeadContext(input, result) {
+  const attribution = getAttributionContext();
+  return compactObject({
+    version: 1,
+    session_id: attribution.session_id,
+    captured_at: new Date().toISOString(),
+    landing_page: attribution.landing_page,
+    page_path: attribution.page_path,
+    referrer: attribution.referrer,
+    utm_source: attribution.utm_source,
+    utm_medium: attribution.utm_medium,
+    utm_campaign: attribution.utm_campaign,
+    utm_content: attribution.utm_content,
+    utm_term: attribution.utm_term,
+    gclid: attribution.gclid,
+    gbraid: attribution.gbraid,
+    wbraid: attribution.wbraid,
+    msclkid: attribution.msclkid,
+    project_type: input.projectType,
+    growth_12_months: input.growth12Months,
+    workflow_fit: input.workflowFit,
+    integration_needs: input.integrationNeeds,
+    compliance_needs: input.complianceNeeds,
+    urgency: input.urgency,
+    monthly_saas_spend: input.monthlySaaSSpend,
+    monthly_automation_spend: input.monthlyAutomationSpend,
+    manual_hours_per_week: input.manualHoursPerWeek,
+    hourly_team_cost: input.hourlyTeamCost,
+    tool_count: input.toolCount,
+    user_count: input.userCount,
+    recommendation: result.recommendation,
+    readiness_score: result.readinessScore,
+    break_even_months: result.breakEvenMonths ?? undefined,
+    annual_total_current_cost: Math.round(result.annualTotalCurrentCost),
+    build_estimate_mid: Math.round(result.buildEstimateMid),
+    three_year_saas_cost: Math.round(result.threeYearSaaSCost),
+    three_year_custom_cost: Math.round(result.threeYearCustomCost)
+  });
+}
+
+function persistLeadContext(context) {
+  const serialized = encodeURIComponent(JSON.stringify(context));
+  sessionStorage.setItem(STORAGE_KEYS.context, JSON.stringify(context));
+  window.__why57RoiContext = context;
+
+  document.cookie = `${CROSS_SUBDOMAIN_COOKIE_NAME}=${serialized}; Domain=${CROSS_SUBDOMAIN_COOKIE_DOMAIN}; Path=/; Max-Age=604800; SameSite=Lax; Secure`;
+}
+
+function eventDefaults() {
+  const attribution = getAttributionContext();
+  return compactObject({
+    page_path: attribution.page_path,
+    page_title: attribution.page_title,
+    session_id: attribution.session_id,
+    utm_source: attribution.utm_source,
+    utm_medium: attribution.utm_medium,
+    utm_campaign: attribution.utm_campaign
+  });
+}
 
 function currency(value, options = {}) {
   const maximumFractionDigits = options.maximumFractionDigits ?? 0;
@@ -73,19 +210,58 @@ function clampScore(value) {
 }
 
 function trackEvent(name, detail = {}) {
-  const payload = { event: name, ...detail };
+  const payload = compactObject({ event: name, ...eventDefaults(), ...detail });
+  const eventPayload = { ...payload };
+  delete eventPayload.event;
   window.dataLayer = window.dataLayer || [];
   window.dataLayer.push(payload);
 
   if (typeof window.gtag === "function") {
-    window.gtag("event", name, detail);
+    window.gtag("event", name, eventPayload);
   }
 
   if (typeof window.plausible === "function") {
-    window.plausible(name, { props: detail });
+    window.plausible(name, { props: eventPayload });
   }
 
   document.dispatchEvent(new CustomEvent("roi-calculator:event", { detail: payload }));
+}
+
+function trackLeadGenerated(detail = {}) {
+  let fallbackContext = null;
+  const storedContext = sessionStorage.getItem(STORAGE_KEYS.context);
+  if (storedContext) {
+    try {
+      fallbackContext = JSON.parse(storedContext);
+    } catch (_error) {
+      sessionStorage.removeItem(STORAGE_KEYS.context);
+    }
+  }
+
+  const context = latestContext || fallbackContext;
+  const payload = compactObject({
+    ...eventDefaults(),
+    recommendation: context?.recommendation,
+    readiness_score: context?.readiness_score,
+    break_even_months: context?.break_even_months,
+    project_type: context?.project_type,
+    value: context?.build_estimate_mid,
+    currency: "USD",
+    ...detail
+  });
+
+  window.dataLayer = window.dataLayer || [];
+  window.dataLayer.push({ event: "generate_lead", ...payload });
+
+  if (typeof window.gtag === "function") {
+    window.gtag("event", "generate_lead", payload);
+  }
+
+  if (typeof window.plausible === "function") {
+    window.plausible("generate_lead", { props: payload });
+  }
+
+  document.dispatchEvent(new CustomEvent("roi-calculator:lead", { detail: payload }));
 }
 
 function getFormValue(name) {
@@ -420,7 +596,10 @@ function renderResult(result) {
 
   if (lastTrackedBucket !== result.recommendation) {
     lastTrackedBucket = result.recommendation;
-    trackEvent(TRACKED_EVENTS.bucketViewed, { bucket: result.recommendation, score: result.readinessScore });
+    trackEvent(TRACKED_EVENTS.bucketViewed, {
+      bucket: result.recommendation,
+      readiness_score: result.readinessScore
+    });
   }
 }
 
@@ -438,17 +617,24 @@ function applyDefaultsOnBlur(event) {
 function render() {
   const input = collectInput();
   const result = calculateResult(input);
+  latestContext = buildLeadContext(input, result);
+  persistLeadContext(latestContext);
   renderResult(result);
 
   if (!hasStarted) {
     hasStarted = true;
-    trackEvent(TRACKED_EVENTS.started, { projectType: input.projectType });
+    trackEvent(TRACKED_EVENTS.started, { project_type: input.projectType });
   }
 
   const meaningfulInputs = input.monthlySaaSSpend > 0 || input.manualHoursPerWeek > 0 || input.toolCount > 0;
   if (meaningfulInputs && !hasCompleted) {
     hasCompleted = true;
-    trackEvent(TRACKED_EVENTS.completed, { recommendation: result.recommendation, score: result.readinessScore });
+    trackEvent(TRACKED_EVENTS.completed, {
+      recommendation: result.recommendation,
+      readiness_score: result.readinessScore,
+      break_even_months: result.breakEvenMonths ?? undefined,
+      project_type: input.projectType
+    });
   }
 }
 
@@ -474,12 +660,16 @@ function initEvents() {
   });
 
   ctaLink.addEventListener("click", () => {
-    trackEvent(TRACKED_EVENTS.ctaClicked, { location: "results_panel" });
+    trackLeadGenerated({ cta_location: "results_panel" });
+    trackEvent(TRACKED_EVENTS.ctaClicked, { cta_location: "results_panel" });
   });
 
   document.querySelectorAll('a[href="https://calendar.app.google/93NLV73sQd1DXuUB6"]').forEach((link) => {
     if (link === ctaLink) return;
-    link.addEventListener("click", () => trackEvent(TRACKED_EVENTS.ctaClicked, { location: "page" }));
+    link.addEventListener("click", () => {
+      trackLeadGenerated({ cta_location: "page" });
+      trackEvent(TRACKED_EVENTS.ctaClicked, { cta_location: "page" });
+    });
   });
 
   mobileResultCta.addEventListener("click", () => {

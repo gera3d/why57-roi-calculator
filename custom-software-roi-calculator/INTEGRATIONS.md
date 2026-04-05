@@ -33,13 +33,17 @@ The calculator also writes a first-party cookie on `.why57.com`:
 
 The cookie contains a compact JSON payload with the latest calculator result and attribution context so the main site, a future booking page, or a backend endpoint can read it and attach ROI context to leads.
 
-## Optional lead capture endpoint
+## Lead capture endpoint
 
-If you later provide an endpoint, set it in [index.html](/Users/gerayeremin/Documents/New%20project/custom-software-roi-calculator/index.html):
+The calculator now sends a best-effort JSON POST on booking CTA clicks to:
+
+- `https://why57-roi-intake.gera-695.workers.dev/`
+
+The endpoint is configured in [index.html](/Users/gerayeremin/Documents/New%20project/custom-software-roi-calculator/index.html) through:
 
 - `window.ROI_INTEGRATIONS.leadCaptureEndpoint`
 
-When configured, the calculator will send a best-effort JSON POST on booking CTA clicks containing:
+Each request contains:
 
 - `event_type`
 - `sent_at`
@@ -50,26 +54,28 @@ The booking flow does not block on this request.
 
 ## Remaining account-side setup
 
-These items cannot be fully completed from this static GitHub Pages repo alone, but the site is prepared for them:
+The core setup is now live and completed:
 
-1. GA4 custom dimensions
-   Create event-scoped custom dimensions for:
-   - `recommendation`
-   - `project_type`
-   - `readiness_score`
-   - `break_even_months`
-   - `cta_location`
+1. GA4
+   The calculator uses the same GA4 property as `why57.com`, and the related custom dimensions, custom metrics, and `generate_lead` key event are already configured in GA4 admin.
 
-2. CRM ingestion
-   Add a trusted server endpoint on `why57.com` or another backend that:
-   - reads `why57_roi_context`
-   - stores the calculator state with the lead
-   - associates booked calls or qualified opportunities back to the originating session
+2. Server-side lead capture
+   The Cloudflare Worker at `why57-roi-intake.gera-695.workers.dev` is live and storing normalized lead context in KV.
 
-3. GTM or additional tags
+3. Main-site bridge
+   `why57.com` reads the shared cookie, renders personalized handoff copy, and sends server-side lead context again on booking CTA clicks.
+
+## Optional next layers
+
+These are optional upgrades, not blockers:
+
+1. CRM or webhook forwarding
+   The Worker supports forwarding normalized payloads through `ROI_FORWARD_WEBHOOK_URL` and `ROI_FORWARD_WEBHOOK_SECRET`, but no external CRM is attached by default.
+
+2. GTM or additional tags
    The calculator already pushes flat event objects to `dataLayer`, so a future GTM container can route the same events to Google Ads, Meta, or other tools without changing calculator logic.
 
-4. Session replay / UX tooling
+3. Session replay / UX tooling
    If you add Microsoft Clarity or another replay tool later, keep the same session and attribution fields aligned with the calculator events.
 
 ## Ready-to-use assets
@@ -79,4 +85,15 @@ Two helper assets are included in this repo:
 - [why57-main-site-bridge.js](/Users/gerayeremin/Documents/New%20project/custom-software-roi-calculator/integration-assets/why57-main-site-bridge.js)
 - [lead-capture-endpoint.example.mjs](/Users/gerayeremin/Documents/New%20project/custom-software-roi-calculator/integration-assets/lead-capture-endpoint.example.mjs)
 
-These are not active on the live `why57.com` site yet because that codebase is not available in this workspace.
+The Worker source is versioned in the main-site repo at:
+
+- [worker.js](/Users/gerayeremin/Documents/New%20project/why57/cloudflare/why57-roi-intake/worker.js)
+- [ROI-INTEGRATION.md](/Users/gerayeremin/Documents/New%20project/why57/ROI-INTEGRATION.md)
+
+## Verification summary
+
+As of April 4, 2026:
+
+- `https://why57-roi-intake.gera-695.workers.dev/` returns a healthy JSON response
+- POSTs from both `https://roi.why57.com` and `https://why57.com` are accepted and stored
+- the live frontend endpoint is wired through [index.html](/Users/gerayeremin/Documents/New%20project/custom-software-roi-calculator/index.html)

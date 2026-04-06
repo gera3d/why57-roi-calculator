@@ -1,4 +1,5 @@
 User-agent: *
 Allow: /
 
+Sitemap: https://why57.com/sitemap.xml
 Sitemap: https://roi.why57.com/sitemap.xml

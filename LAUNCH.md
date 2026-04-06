@@ -59,9 +59,19 @@ Cloudflare reference docs:
    - one or two relevant blog or landing pages
 5. After the subdomain is live, request indexing for the homepage in Google Search Console.
 
-## SEO Notes
+## SEO & Sitemaps Management
 
-- The live canonical is already set to `https://roi.why57.com/`.
-- `robots.txt` and `sitemap.xml` are present in the deploy directory.
-- The page includes FAQ schema and WebPage schema.
-- The GitHub Pages preview should be treated as a staging URL, not the canonical production URL.
+To follow best practices, each subdomain manages its own indexing while cross-referencing the other for discovery:
+
+1. **Main Site (`why57.com`)**:
+   - Source: `/why57` (separate git repo)
+   - Sitemap: `/why57/sitemap.xml` (contains 12 pages)
+   - Robots: `/why57/robots.txt` (points to both sitemaps)
+
+2. **ROI Calculator (`roi.why57.com`)**:
+   - Source: `gera3d/why57-roi-calculator`
+   - Deploy Folder: `/custom-software-roi-calculator`
+   - Sitemap: `/custom-software-roi-calculator/sitemap.xml`
+   - Robots: `/custom-software-roi-calculator/robots.txt` (points to both sitemaps)
+
+**Note**: Do not use the `robots.txt` or `sitemap.xml` in the root of the `why57-roi-calculator` repo; those have been removed to avoid confusion.

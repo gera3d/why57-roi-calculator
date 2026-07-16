@@ -1,0 +1,9 @@
+{
+  "name": "why57-roi-calculator",
+  "private": true,
+  "scripts": {
+    "qa": "node --check custom-software-roi-calculator/calculator.js && node --test custom-software-roi-calculator/analytics-contract.test.cjs",
+    "qa:browser": "bash qa/roi-funnel-smoke.sh",
+    "qa:all": "npm run qa && npm run qa:browser"
+  }
+}

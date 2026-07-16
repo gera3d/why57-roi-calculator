@@ -40,6 +40,9 @@ const CROSS_SUBDOMAIN_COOKIE_NAME = ROI_INTEGRATIONS.crossSubdomainCookieName ||
 const CROSS_SUBDOMAIN_COOKIE_DOMAIN = ROI_INTEGRATIONS.crossSubdomainCookieDomain || "why57.com";
 const ATTRIBUTION_COOKIE_NAME = ROI_INTEGRATIONS.attributionCookieName || "why57_first_touch";
 const LEAD_CAPTURE_ENDPOINT = ROI_INTEGRATIONS.leadCaptureEndpoint || "";
+const CONVERSION_RECEIPT_ENDPOINT = LEAD_CAPTURE_ENDPOINT
+  ? new URL("conversion-receipt", LEAD_CAPTURE_ENDPOINT).href
+  : "";
 const BOOKING_URL = "https://calendar.app.google/93NLV73sQd1DXuUB6";
 const SHARE_URL = "https://roi.why57.com/";
 const ATTRIBUTION_MAX_AGE_SECONDS = 60 * 60 * 24 * 730;
@@ -90,13 +93,20 @@ let lastTrackedBucket = "";
 let latestContext = null;
 let latestResult = null;
 let reportFormStartedAt = Date.now();
+let reportRequestId = "";
 
 function createId() {
   if (window.crypto?.randomUUID) {
     return window.crypto.randomUUID();
   }
 
-  return `roi_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  if (window.crypto?.getRandomValues) {
+    const values = new Uint32Array(4);
+    window.crypto.getRandomValues(values);
+    return `roi_${Array.from(values, (value) => value.toString(16).padStart(8, "0")).join("")}`;
+  }
+
+  return `roi_${Date.now()}`;
 }
 
 function getSessionId() {
@@ -518,11 +528,39 @@ async function requestLeadCapture(eventType, context, detail = {}) {
     credentials: "omit"
   });
 
-  if (!response.ok) {
-    throw new Error(`capture_failed_${response.status}`);
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok || !result.ok) {
+    const error = new Error(result.message || `capture_failed_${response.status}`);
+    error.status = response.status;
+    error.code = result.error || "capture_failed";
+    throw error;
   }
 
-  return response;
+  return result;
+}
+
+async function claimConversionReceipt(receipt) {
+  if (!CONVERSION_RECEIPT_ENDPOINT || !/^[a-f0-9]{64}$/.test(String(receipt || ""))) {
+    throw new Error("invalid_conversion_receipt");
+  }
+
+  const response = await fetch(CONVERSION_RECEIPT_ENDPOINT, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ receipt }),
+    mode: "cors",
+    credentials: "omit"
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok || !result.ok || result.event_type !== TRACKED_EVENTS.reportRequested) {
+    const error = new Error(result.message || "receipt_validation_failed");
+    error.status = response.status;
+    error.code = result.error || "receipt_validation_failed";
+    throw error;
+  }
+  return result;
 }
 
 function firstBuildPlan(recommendation) {
@@ -1021,12 +1059,12 @@ async function handleReportSubmit(event) {
   if (!validateReportForm() || !latestContext || !latestResult) return;
 
   setReportLoading(true);
-  const requestId = createId();
+  if (!reportRequestId) reportRequestId = createId();
   const formElapsedMs = Math.max(0, Date.now() - reportFormStartedAt);
 
   try {
-    await requestLeadCapture(TRACKED_EVENTS.reportRequested, publicResultContext(latestContext), {
-      request_id: requestId,
+    const delivery = await requestLeadCapture(TRACKED_EVENTS.reportRequested, publicResultContext(latestContext), {
+      request_id: reportRequestId,
       email: reportEmail.value.trim(),
       consent: true,
       consent_version: "roi-report-v1-2026-07-15",
@@ -1035,18 +1073,34 @@ async function handleReportSubmit(event) {
       result_summary: shareableResult(latestResult),
       recommended_plan: firstBuildPlan(latestResult.recommendation)
     });
+    if (delivery.stored !== true || delivery.forwarded !== true) {
+      const error = new Error("delivery_not_confirmed");
+      error.code = "delivery_not_confirmed";
+      throw error;
+    }
+
+    const receipt = await claimConversionReceipt(delivery.receipt);
 
     markCalculatorCompleted("report_submit");
-    trackEvent(TRACKED_EVENTS.reportRequested, {
-      recommendation: latestResult.recommendation,
-      readiness_score: latestResult.readinessScore,
-      break_even_months: latestResult.breakEvenMonths ?? undefined,
-      project_type: latestContext.project_type
-    });
+    if (receipt.claimed === true) {
+      trackEvent(TRACKED_EVENTS.reportRequested, {
+        recommendation: latestResult.recommendation,
+        readiness_score: latestResult.readinessScore,
+        break_even_months: latestResult.breakEvenMonths ?? undefined,
+        project_type: latestContext.project_type,
+        submission_id: receipt.submission_id
+      });
+    }
     showReportSuccess();
-  } catch (_error) {
-    reportStatus.textContent =
-      "We couldn’t send the request. Your result is still here—please try again in a moment.";
+  } catch (error) {
+    if (error?.status && !["delivery_state_unknown", "request_processing"].includes(error.code)) {
+      reportRequestId = "";
+    }
+    reportStatus.textContent = error?.status === 429
+      ? "We received several requests from this connection. Your result is still here, but you may need to wait up to one hour before trying again."
+      : error?.code === "request_processing"
+        ? "This request is already processing. Do not submit it again—check your email in a moment."
+        : "We couldn’t confirm the request. Your result is still here—please try again in a moment.";
   } finally {
     setReportLoading(false);
   }

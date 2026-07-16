@@ -48,3 +48,32 @@ test("the ROI page mirrors the main-site GA4 cross-domain linker", () => {
   assert.match(indexSource, /gtag\("set", "linker"/);
   assert.match(indexSource, /accept_incoming: true/);
 });
+
+test("unsupported proof claims are replaced with process proof", () => {
+  assert.doesNotMatch(indexSource, />15\+</);
+  assert.doesNotMatch(indexSource, />50\+</);
+  assert.doesNotMatch(indexSource, />10x</);
+  assert.doesNotMatch(indexSource, /Years of experience|Clients served|Average ROI/);
+  assert.match(indexSource, /You control the scenario/);
+  assert.match(indexSource, /Assumptions stay visible/);
+  assert.match(indexSource, /Directional, not a guarantee/);
+});
+
+test("ROI report delivery uses one request ID and a one-time conversion receipt", () => {
+  const submitBody = functionBody("handleReportSubmit");
+
+  assert.match(submitBody, /if \(!reportRequestId\) reportRequestId = createId\(\)/);
+  assert.match(submitBody, /delivery\.stored !== true \|\| delivery\.forwarded !== true/);
+  assert.match(submitBody, /claimConversionReceipt\(delivery\.receipt\)/);
+  assert.match(submitBody, /receipt\.claimed === true/);
+  assert.match(calculatorSource, /async function requestLeadCapture[\s\S]+await response\.json\(\)/);
+  assert.match(calculatorSource, /async function claimConversionReceipt[\s\S]+CONVERSION_RECEIPT_ENDPOINT/);
+});
+
+test("ROI rate-limit copy names the one-hour wait and keeps the form contract", () => {
+  const submitBody = functionBody("handleReportSubmit");
+  assert.match(submitBody, /wait up to one hour/);
+  assert.match(indexSource, /id="report-email"[^>]+required/);
+  assert.match(indexSource, /id="report-consent"[^>]+required/);
+  assert.match(indexSource, /name="companyWebsite"/);
+});

@@ -46,6 +46,7 @@
         crossSubdomainCookieDomain: "why57.com",
         crossSubdomainCookieName: "why57_roi_context",
         attributionCookieName: "why57_first_touch",
+        linkerDomains: ["why57.com", "roi.why57.com"],
         leadCaptureEndpoint: "https://why57-roi-intake.gera-695.workers.dev/"
       };
       window.dataLayer = window.dataLayer || [];
@@ -53,6 +54,11 @@
         window.dataLayer.push(arguments);
       }
       window.gtag = window.gtag || gtag;
+      window.gtag("set", "linker", {
+        domains: window.ROI_INTEGRATIONS.linkerDomains,
+        accept_incoming: true,
+        decorate_forms: true
+      });
       window.gtag("js", new Date());
       window.gtag("config", window.ROI_INTEGRATIONS.ga4MeasurementId, {
         send_page_view: true

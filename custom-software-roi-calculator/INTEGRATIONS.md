@@ -8,6 +8,7 @@
 - `crossSubdomainCookieDomain`: shared parent domain (`why57.com`)
 - `crossSubdomainCookieName`: seven-day calculator result context cookie
 - `attributionCookieName`: two-year, first-touch acquisition cookie shared by `why57.com` and `roi.why57.com`
+- `linkerDomains`: GA4 cross-domain linker domains shared with the main site
 - `leadCaptureEndpoint`: existing JSON intake URL for booking and report requests
 
 No email provider credentials, webhook secrets, or other secrets belong in this object.
@@ -27,11 +28,15 @@ The calculator pushes flat events to `dataLayer`, GA4, and the existing custom D
 
 Analytics payloads never include the submitted email address or worksheet inputs.
 
+`calculator_started` fires once after the first intentional form or step-navigation interaction. It never fires from the initial default render. `calculator_completed` fires once only after an explicit result action (`See result`, result share, report form, result assumptions, or result booking) or after the visitor has intentionally changed at least one field in all four calculator steps. Its payload includes `completion_trigger` and `steps_touched`. `result_bucket_viewed` begins only after that completion boundary and can fire again only if a later change moves the completed calculator into a different recommendation bucket.
+
 ## Original acquisition across subdomains
 
 The `why57_first_touch` cookie preserves the first landing page, external referrer, first-seen time, source, medium, external campaign values, and ad click IDs for up to two years. The calculator reads that cookie before looking at its own landing URL, so moving between `why57.com` and `roi.why57.com` does not replace the original acquisition with an internal referral.
 
 The main site's shared `analytics.js` initializes the same cookie for visitors who start there. The bridge asset at `integration-assets/why57-main-site-bridge.js` remains available only for ROI-result personalization on older main-site deployments. Internal links do not need UTM parameters. If an old internal link still uses an internal `utm_source` value such as `why57`, `website`, or `internal`, it is ignored when the referrer is another Why57 subdomain. External UTM and ad click IDs are still captured.
+
+Both pages also configure the same GA4 linker domains in code. After deployment, verify the GA4 Admin cross-domain settings include the Why57 domains and run a live main-site-to-ROI navigation test. Confirm the linker is accepted, one user/session continues across the subdomain boundary, and `why57.com` is not recorded as an ROI referral.
 
 The result cookie remains separate and contains the latest calculator context for booking personalization.
 

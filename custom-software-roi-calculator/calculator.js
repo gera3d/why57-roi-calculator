@@ -64,7 +64,6 @@ const assumptions = document.querySelector("#assumptions");
 const ctaLink = document.querySelector("#cta-link");
 const mobileResultCta = document.querySelector(".mobile-result-cta");
 const resultsPanel = document.querySelector("#results");
-const projectTypeInputs = Array.from(document.querySelectorAll('input[name="projectType"]'));
 const numericInputs = Array.from(document.querySelectorAll("input[data-number]"));
 const stepGroups = Array.from(document.querySelectorAll(".input-group"));
 const prevButton = document.querySelector("#step-prev");
@@ -86,6 +85,7 @@ const reportSuccess = document.querySelector("#report-success");
 let currentStep = 0;
 let hasStarted = false;
 let hasCompleted = false;
+const touchedSteps = new Set();
 let lastTrackedBucket = "";
 let latestContext = null;
 let latestResult = null;
@@ -379,6 +379,55 @@ function trackEvent(name, detail = {}) {
   }
 
   document.dispatchEvent(new CustomEvent("roi-calculator:event", { detail: payload }));
+}
+
+function resultEventDetail(result, detail = {}) {
+  if (!result) return detail;
+
+  return compactObject({
+    recommendation: result.recommendation,
+    readiness_score: result.readinessScore,
+    break_even_months: result.breakEvenMonths ?? undefined,
+    project_type: latestContext?.project_type,
+    ...detail
+  });
+}
+
+function markCalculatorStarted(interaction) {
+  if (hasStarted) return;
+
+  hasStarted = true;
+  trackEvent(TRACKED_EVENTS.started, {
+    interaction,
+    project_type: latestContext?.project_type || collectInput().projectType
+  });
+}
+
+function trackResultBucket(result) {
+  if (!hasCompleted || !result || lastTrackedBucket === result.recommendation) return;
+
+  lastTrackedBucket = result.recommendation;
+  trackEvent(TRACKED_EVENTS.bucketViewed, {
+    bucket: result.recommendation,
+    readiness_score: result.readinessScore
+  });
+}
+
+function markCalculatorCompleted(completionTrigger) {
+  if (!latestResult || hasCompleted) return;
+
+  markCalculatorStarted(completionTrigger);
+  hasCompleted = true;
+  trackEvent(TRACKED_EVENTS.completed, resultEventDetail(latestResult, {
+    completion_trigger: completionTrigger,
+    steps_touched: touchedSteps.size
+  }));
+  trackResultBucket(latestResult);
+}
+
+function recordTouchedStep(target) {
+  const step = target?.closest?.(".input-group[data-step]");
+  if (step?.dataset.step !== undefined) touchedSteps.add(step.dataset.step);
 }
 
 function sendLeadCapture(eventType, detail = {}) {
@@ -873,13 +922,6 @@ function renderResult(result) {
 
   resultState.dataset.tone = result.recommendation;
 
-  if (lastTrackedBucket !== result.recommendation) {
-    lastTrackedBucket = result.recommendation;
-    trackEvent(TRACKED_EVENTS.bucketViewed, {
-      bucket: result.recommendation,
-      readiness_score: result.readinessScore
-    });
-  }
 }
 
 function clearFieldError(field, errorElement) {
@@ -935,6 +977,8 @@ function showReportSuccess() {
 
 async function handleShareResult() {
   if (!latestResult) return;
+
+  markCalculatorCompleted("result_share");
 
   shareStatus.textContent = "";
   const text = shareableResultText(latestResult);
@@ -992,6 +1036,7 @@ async function handleReportSubmit(event) {
       recommended_plan: firstBuildPlan(latestResult.recommendation)
     });
 
+    markCalculatorCompleted("report_submit");
     trackEvent(TRACKED_EVENTS.reportRequested, {
       recommendation: latestResult.recommendation,
       readiness_score: latestResult.readinessScore,
@@ -1025,26 +1070,17 @@ function render() {
   latestContext = buildLeadContext(input, result);
   persistLeadContext(latestContext);
   renderResult(result);
-
-  if (!hasStarted) {
-    hasStarted = true;
-    trackEvent(TRACKED_EVENTS.started, { project_type: input.projectType });
-  }
-
-  const meaningfulInputs = input.monthlySaaSSpend > 0 || input.manualHoursPerWeek > 0 || input.toolCount > 0;
-  if (meaningfulInputs && !hasCompleted) {
-    hasCompleted = true;
-    trackEvent(TRACKED_EVENTS.completed, {
-      recommendation: result.recommendation,
-      readiness_score: result.readinessScore,
-      break_even_months: result.breakEvenMonths ?? undefined,
-      project_type: input.projectType
-    });
-  }
+  trackResultBucket(result);
 }
 
-function handleInputChange() {
+function handleInputChange(event) {
+  markCalculatorStarted("input_change");
+  recordTouchedStep(event.target);
   render();
+
+  if (touchedSteps.size === stepGroups.length) {
+    markCalculatorCompleted("all_steps_changed");
+  }
 }
 
 function setCurrentStep(nextStep) {
@@ -1069,15 +1105,16 @@ function initEvents() {
   form.addEventListener("input", handleInputChange);
   form.addEventListener("change", handleInputChange);
   numericInputs.forEach((input) => input.addEventListener("blur", applyDefaultsOnBlur));
-  projectTypeInputs.forEach((input) => input.addEventListener("change", handleInputChange));
 
   assumptions.addEventListener("toggle", () => {
     if (assumptions.open) {
+      markCalculatorCompleted("assumptions_opened");
       trackEvent(TRACKED_EVENTS.assumptionsOpened);
     }
   });
 
   ctaLink.addEventListener("click", () => {
+    markCalculatorCompleted("results_booking_click");
     trackEvent(TRACKED_EVENTS.ctaClicked, { cta_location: "results_panel" });
     trackEvent(TRACKED_EVENTS.bookingClicked, { cta_location: "results_panel" });
     sendLeadCapture(TRACKED_EVENTS.bookingClicked, { cta_location: "results_panel", conversion_stage: "micro" });
@@ -1105,16 +1142,23 @@ function initEvents() {
   reportCapture.addEventListener("toggle", () => {
     if (reportCapture.open) {
       reportFormStartedAt = Date.now();
+      markCalculatorCompleted("report_form_opened");
     }
   });
 
   mobileResultCta.addEventListener("click", () => {
+    markCalculatorCompleted("mobile_result_cta");
     window.location.hash = "results";
   });
 
-  prevButton.addEventListener("click", () => setCurrentStep(currentStep - 1));
+  prevButton.addEventListener("click", () => {
+    markCalculatorStarted("step_navigation");
+    setCurrentStep(currentStep - 1);
+  });
   nextButton.addEventListener("click", () => {
+    markCalculatorStarted("step_navigation");
     if (currentStep === stepGroups.length - 1) {
+      markCalculatorCompleted("see_result");
       document.querySelector("#results").scrollIntoView({ behavior: "smooth", block: "start" });
       return;
     }

@@ -10,8 +10,11 @@
 - `attributionCookieName`: two-year, first-touch acquisition cookie shared by `why57.com` and `roi.why57.com`
 - `linkerDomains`: GA4 cross-domain linker domains shared with the main site
 - `leadCaptureEndpoint`: existing JSON intake URL for booking and report requests
+- `identifiedLeadIntake`: localhost-only adapter for exercising the new `/v1/leads` contract through the existing report form
 
 No email provider credentials, webhook secrets, or other secrets belong in this object.
+
+The identified adapter is enabled only on `localhost` and `127.0.0.1`. On the deployed ROI domain its endpoint is empty, so the current production report and booking-event flow continues to use `leadCaptureEndpoint` unchanged. Do not put a staging submission token in front-end code.
 
 ## Analytics events
 
@@ -52,13 +55,17 @@ The calculator remains ungated. After seeing the live result, a visitor may expa
 - a request ID and form elapsed time
 - an empty honeypot field
 
+When the localhost-only identified adapter is active, the same form also asks for the name required by `/v1/leads`. It does not add a second capture form or gate the calculator result.
+
 The report request intentionally omits raw monthly spend, hourly team cost, user count, tool count, and other worksheet fields. The share action is even narrower: it includes only the recommendation headline, readiness score, directional break-even, three-year comparison, and the canonical calculator URL.
 
-The UI includes custom validation plus loading, server error, and success states. A request is considered successful only when the configured endpoint returns a 2xx response.
+The UI includes custom validation plus loading, server error, and success states. A legacy production request is considered successful when the configured endpoint returns a 2xx response. The identified adapter additionally requires a JSON `{ "ok": true }` response and uses the returned `delivery_mode` in its confirmation copy. `test` can send a real message to an allowlisted test inbox; `dry-run` does not contact email, Slack, or Sheets.
 
 ## Endpoint contract and spam protection
 
 `integration-assets/lead-capture-endpoint.example.mjs` documents the compatible server pattern. It accepts `calendar_booking_clicked` and the completed `roi_report_requested` event at the same JSON endpoint.
+
+For local QA only, the report form adapts that same consented submission to the identified intake contract with `event_type: "lead_submission"`, `source: "roi_calculator_result"`, contact name and email, the public result context, and a stable `submission_id`. The ID is created once per page load and reused when a failed request is retried, allowing the intake service to deduplicate a request whose first response was lost.
 
 The example enforces:
 

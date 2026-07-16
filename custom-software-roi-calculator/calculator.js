@@ -40,6 +40,9 @@ const CROSS_SUBDOMAIN_COOKIE_NAME = ROI_INTEGRATIONS.crossSubdomainCookieName ||
 const CROSS_SUBDOMAIN_COOKIE_DOMAIN = ROI_INTEGRATIONS.crossSubdomainCookieDomain || "why57.com";
 const ATTRIBUTION_COOKIE_NAME = ROI_INTEGRATIONS.attributionCookieName || "why57_first_touch";
 const LEAD_CAPTURE_ENDPOINT = ROI_INTEGRATIONS.leadCaptureEndpoint || "";
+const IDENTIFIED_LEAD_INTAKE = ROI_INTEGRATIONS.identifiedLeadIntake || {};
+const IDENTIFIED_LEAD_INTAKE_ENABLED =
+  IDENTIFIED_LEAD_INTAKE.enabled === true && Boolean(IDENTIFIED_LEAD_INTAKE.endpoint);
 const BOOKING_URL = "https://calendar.app.google/93NLV73sQd1DXuUB6";
 const SHARE_URL = "https://roi.why57.com/";
 const ATTRIBUTION_MAX_AGE_SECONDS = 60 * 60 * 24 * 730;
@@ -76,6 +79,9 @@ const shareSummary = document.querySelector("#share-summary");
 const shareStatus = document.querySelector("#share-status");
 const reportCapture = document.querySelector("#report-capture");
 const reportForm = document.querySelector("#report-form");
+const reportNameField = document.querySelector("#report-name-field");
+const reportName = document.querySelector("#report-name");
+const reportNameError = document.querySelector("#report-name-error");
 const reportEmail = document.querySelector("#report-email");
 const reportConsent = document.querySelector("#report-consent");
 const reportSubmit = document.querySelector("#report-submit");
@@ -90,6 +96,7 @@ let lastTrackedBucket = "";
 let latestContext = null;
 let latestResult = null;
 let reportFormStartedAt = Date.now();
+const reportSubmissionId = createId();
 
 function createId() {
   if (window.crypto?.randomUUID) {
@@ -525,6 +532,56 @@ async function requestLeadCapture(eventType, context, detail = {}) {
   return response;
 }
 
+async function requestReportCapture(context, detail) {
+  if (!IDENTIFIED_LEAD_INTAKE_ENABLED) {
+    await requestLeadCapture(TRACKED_EVENTS.reportRequested, context, detail);
+    return {};
+  }
+
+  const response = await fetch(IDENTIFIED_LEAD_INTAKE.endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      event_type: "lead_submission",
+      submission_id: detail.request_id,
+      sent_at: new Date().toISOString(),
+      source: "roi_calculator_result",
+      contact: {
+        name: detail.name,
+        email: detail.email
+      },
+      interest: "custom software ROI result",
+      message: detail.result_summary,
+      website: detail.website,
+      page_url: window.location.href,
+      referrer: document.referrer || undefined,
+      consent: detail.consent,
+      consent_version: detail.consent_version,
+      context: {
+        ...context,
+        site_source: "roi_calculator"
+      }
+    }),
+    mode: "cors",
+    credentials: "omit"
+  });
+
+  let result = {};
+  try {
+    result = await response.json();
+  } catch (_error) {
+    // A successful intake response must still be valid JSON so the UI can report the actual delivery mode.
+  }
+
+  if (!response.ok || result.ok !== true) {
+    throw new Error(`capture_failed_${response.status}`);
+  }
+
+  return result;
+}
+
 function firstBuildPlan(recommendation) {
   const plans = {
     stay: {
@@ -935,12 +992,19 @@ function setFieldError(field, errorElement, message) {
 }
 
 function validateReportForm() {
+  const nameError = reportNameError;
   const emailError = document.querySelector("#report-email-error");
   const consentError = document.querySelector("#report-consent-error");
   let valid = true;
 
+  clearFieldError(reportName, nameError);
   clearFieldError(reportEmail, emailError);
   clearFieldError(reportConsent, consentError);
+
+  if (IDENTIFIED_LEAD_INTAKE_ENABLED && !reportName.value.trim()) {
+    setFieldError(reportName, nameError, "Enter your name so the test lead can be identified.");
+    valid = false;
+  }
 
   if (!reportEmail.value.trim()) {
     setFieldError(reportEmail, emailError, "Enter the email address where you want the result sent.");
@@ -969,7 +1033,14 @@ function setReportLoading(loading) {
   reportSubmit.textContent = loading ? "Sending request…" : "Email me my result and plan";
 }
 
-function showReportSuccess() {
+function showReportSuccess(deliveryMode) {
+  const successMessage = reportSuccess.querySelector("p");
+  if (successMessage && deliveryMode === "test") {
+    successMessage.textContent =
+      "Test request accepted. A real test email may be sent only to the approved test inbox.";
+  } else if (successMessage && deliveryMode === "dry-run") {
+    successMessage.textContent = "Dry run accepted. No email, Slack alert, or spreadsheet row was sent.";
+  }
   reportForm.hidden = true;
   reportSuccess.hidden = false;
   reportSuccess.focus();
@@ -1021,12 +1092,12 @@ async function handleReportSubmit(event) {
   if (!validateReportForm() || !latestContext || !latestResult) return;
 
   setReportLoading(true);
-  const requestId = createId();
   const formElapsedMs = Math.max(0, Date.now() - reportFormStartedAt);
 
   try {
-    await requestLeadCapture(TRACKED_EVENTS.reportRequested, publicResultContext(latestContext), {
-      request_id: requestId,
+    const result = await requestReportCapture(publicResultContext(latestContext), {
+      request_id: reportSubmissionId,
+      name: IDENTIFIED_LEAD_INTAKE_ENABLED ? reportName.value.trim() : "",
       email: reportEmail.value.trim(),
       consent: true,
       consent_version: "roi-report-v1-2026-07-15",
@@ -1043,7 +1114,7 @@ async function handleReportSubmit(event) {
       break_even_months: latestResult.breakEvenMonths ?? undefined,
       project_type: latestContext.project_type
     });
-    showReportSuccess();
+    showReportSuccess(result.delivery_mode);
   } catch (_error) {
     reportStatus.textContent =
       "We couldn’t send the request. Your result is still here—please try again in a moment.";
@@ -1102,6 +1173,12 @@ function initMobileResultVisibility() {
 }
 
 function initEvents() {
+  if (IDENTIFIED_LEAD_INTAKE_ENABLED) {
+    reportNameField.hidden = false;
+    reportNameError.hidden = false;
+    reportName.required = true;
+  }
+
   form.addEventListener("input", handleInputChange);
   form.addEventListener("change", handleInputChange);
   numericInputs.forEach((input) => input.addEventListener("blur", applyDefaultsOnBlur));
@@ -1131,6 +1208,10 @@ function initEvents() {
 
   shareButton.addEventListener("click", handleShareResult);
   reportForm.addEventListener("submit", handleReportSubmit);
+  reportName.addEventListener("input", () => {
+    clearFieldError(reportName, reportNameError);
+    reportStatus.textContent = "";
+  });
   reportEmail.addEventListener("input", () => {
     clearFieldError(reportEmail, document.querySelector("#report-email-error"));
     reportStatus.textContent = "";

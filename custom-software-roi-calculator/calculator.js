@@ -23,7 +23,10 @@ const TRACKED_EVENTS = {
   completed: "calculator_completed",
   bucketViewed: "result_bucket_viewed",
   assumptionsOpened: "assumptions_opened",
-  ctaClicked: "cta_clicked"
+  ctaClicked: "cta_clicked",
+  bookingClicked: "calendar_booking_clicked",
+  resultShared: "roi_result_shared",
+  reportRequested: "roi_report_requested"
 };
 
 const STORAGE_KEYS = {
@@ -35,7 +38,11 @@ const STORAGE_KEYS = {
 const ROI_INTEGRATIONS = window.ROI_INTEGRATIONS || {};
 const CROSS_SUBDOMAIN_COOKIE_NAME = ROI_INTEGRATIONS.crossSubdomainCookieName || "why57_roi_context";
 const CROSS_SUBDOMAIN_COOKIE_DOMAIN = ROI_INTEGRATIONS.crossSubdomainCookieDomain || "why57.com";
+const ATTRIBUTION_COOKIE_NAME = ROI_INTEGRATIONS.attributionCookieName || "why57_first_touch";
 const LEAD_CAPTURE_ENDPOINT = ROI_INTEGRATIONS.leadCaptureEndpoint || "";
+const BOOKING_URL = "https://calendar.app.google/93NLV73sQd1DXuUB6";
+const SHARE_URL = "https://roi.why57.com/";
+const ATTRIBUTION_MAX_AGE_SECONDS = 60 * 60 * 24 * 730;
 
 const DEFAULT_INPUT = {
   projectType: "workflow_automation",
@@ -56,7 +63,7 @@ const form = document.querySelector("#roi-form");
 const assumptions = document.querySelector("#assumptions");
 const ctaLink = document.querySelector("#cta-link");
 const mobileResultCta = document.querySelector(".mobile-result-cta");
-const projectTypeInputs = Array.from(document.querySelectorAll('input[name="projectType"]'));
+const resultsPanel = document.querySelector("#results");
 const numericInputs = Array.from(document.querySelectorAll("input[data-number]"));
 const stepGroups = Array.from(document.querySelectorAll(".input-group"));
 const prevButton = document.querySelector("#step-prev");
@@ -64,12 +71,25 @@ const nextButton = document.querySelector("#step-next");
 const stepCurrent = document.querySelector("#mobile-step-current");
 const stepTitle = document.querySelector("#mobile-step-title");
 const stepProgress = document.querySelector("#stepper-progress");
+const shareButton = document.querySelector("#share-result");
+const shareSummary = document.querySelector("#share-summary");
+const shareStatus = document.querySelector("#share-status");
+const reportCapture = document.querySelector("#report-capture");
+const reportForm = document.querySelector("#report-form");
+const reportEmail = document.querySelector("#report-email");
+const reportConsent = document.querySelector("#report-consent");
+const reportSubmit = document.querySelector("#report-submit");
+const reportStatus = document.querySelector("#report-form-status");
+const reportSuccess = document.querySelector("#report-success");
 
 let currentStep = 0;
 let hasStarted = false;
 let hasCompleted = false;
+const touchedSteps = new Set();
 let lastTrackedBucket = "";
 let latestContext = null;
+let latestResult = null;
+let reportFormStartedAt = Date.now();
 
 function createId() {
   if (window.crypto?.randomUUID) {
@@ -94,6 +114,67 @@ function cleanParamValue(value) {
   return normalized === "" ? undefined : normalized;
 }
 
+function readCookie(name) {
+  const prefix = `${name}=`;
+  const match = document.cookie
+    .split(";")
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(prefix));
+
+  return match ? match.slice(prefix.length) : null;
+}
+
+function parseJson(value) {
+  if (!value) return null;
+
+  try {
+    return JSON.parse(value);
+  } catch (_error) {
+    return null;
+  }
+}
+
+function readJsonCookie(name) {
+  const encoded = readCookie(name);
+  if (!encoded) return null;
+
+  try {
+    return parseJson(decodeURIComponent(encoded));
+  } catch (_error) {
+    return null;
+  }
+}
+
+function writeSharedCookie(name, value, maxAgeSeconds) {
+  const serialized = encodeURIComponent(JSON.stringify(value));
+  const secure = window.location.protocol === "https:" ? "; Secure" : "";
+  const domain = window.location.hostname.endsWith("why57.com")
+    ? `; Domain=${CROSS_SUBDOMAIN_COOKIE_DOMAIN}`
+    : "";
+
+  document.cookie = `${name}=${serialized}${domain}; Path=/; Max-Age=${maxAgeSeconds}; SameSite=Lax${secure}`;
+}
+
+function isWhy57Url(value) {
+  if (!value) return false;
+
+  try {
+    const hostname = new URL(value).hostname.toLowerCase();
+    return hostname === "why57.com" || hostname.endsWith(".why57.com");
+  } catch (_error) {
+    return false;
+  }
+}
+
+function hostnameFor(value) {
+  if (!value) return undefined;
+  try {
+    return new URL(value).hostname.toLowerCase();
+  } catch (_error) {
+    return undefined;
+  }
+}
+
 function pickCampaignParams(searchParams) {
   return {
     utm_source: cleanParamValue(searchParams.get("utm_source")),
@@ -108,6 +189,58 @@ function pickCampaignParams(searchParams) {
   };
 }
 
+function withoutInternalCampaign(campaign, internalReferral) {
+  if (!internalReferral) return campaign;
+
+  const source = campaign.utm_source?.toLowerCase();
+  const internalSources = new Set(["57", "why57", "why57.com", "roi.why57.com", "internal", "website"]);
+  if (!source || !internalSources.has(source)) return campaign;
+
+  return {
+    gclid: campaign.gclid,
+    gbraid: campaign.gbraid,
+    wbraid: campaign.wbraid,
+    msclkid: campaign.msclkid
+  };
+}
+
+function sharedAttributionContext() {
+  const shared = readJsonCookie(ATTRIBUTION_COOKIE_NAME);
+  if (!shared || !shared.landing_page || !(shared.first_seen_at || shared.captured_at)) return null;
+
+  return compactObject({
+    ...shared,
+    first_seen_at: shared.first_seen_at || shared.captured_at,
+    referrer: shared.referrer,
+    source: shared.source,
+    medium: shared.medium
+  });
+}
+
+function persistAttributionContext(attribution) {
+  const referrerHost = hostnameFor(attribution.referrer);
+  const shared = compactObject({
+    version: 2,
+    captured_at: attribution.first_seen_at,
+    landing_page: attribution.landing_page,
+    referrer_host: referrerHost,
+    source: attribution.source || attribution.utm_source || referrerHost || "(direct)",
+    medium: attribution.medium || attribution.utm_medium || (referrerHost ? "referral" : "(none)"),
+    utm_source: attribution.utm_source,
+    utm_medium: attribution.utm_medium,
+    utm_campaign: attribution.utm_campaign,
+    utm_content: attribution.utm_content,
+    utm_term: attribution.utm_term,
+    gclid: attribution.gclid,
+    gbraid: attribution.gbraid,
+    wbraid: attribution.wbraid,
+    msclkid: attribution.msclkid
+  });
+
+  sessionStorage.setItem(STORAGE_KEYS.attribution, JSON.stringify(attribution));
+  writeSharedCookie(ATTRIBUTION_COOKIE_NAME, shared, ATTRIBUTION_MAX_AGE_SECONDS);
+}
+
 function getAttributionContext() {
   const cached = sessionStorage.getItem(STORAGE_KEYS.attribution);
   if (cached) {
@@ -119,17 +252,33 @@ function getAttributionContext() {
   }
 
   const searchParams = new URLSearchParams(window.location.search);
-  const attribution = {
+  const shared = sharedAttributionContext();
+  const referrer = cleanParamValue(document.referrer);
+  const internalReferral = isWhy57Url(referrer);
+  const campaign = withoutInternalCampaign(pickCampaignParams(searchParams), internalReferral);
+  const externalReferrerHost = internalReferral ? undefined : hostnameFor(referrer);
+  const paidSearchSource = campaign.gclid || campaign.gbraid || campaign.wbraid
+    ? "google"
+    : campaign.msclkid
+      ? "bing"
+      : undefined;
+  const attribution = compactObject({
+    ...shared,
+    version: 2,
     session_id: getSessionId(),
-    landing_page: window.location.href,
+    landing_page: shared?.landing_page || window.location.href,
+    calculator_landing_page: window.location.href,
     page_path: window.location.pathname,
     page_title: document.title,
-    referrer: cleanParamValue(document.referrer),
-    first_seen_at: new Date().toISOString(),
-    ...pickCampaignParams(searchParams)
-  };
+    referrer: shared?.referrer || (internalReferral ? undefined : referrer),
+    internal_referrer: internalReferral ? referrer : undefined,
+    first_seen_at: shared?.first_seen_at || new Date().toISOString(),
+    source: shared?.source || campaign.utm_source || paidSearchSource || externalReferrerHost || "(direct)",
+    medium: shared?.medium || campaign.utm_medium || (paidSearchSource ? "cpc" : externalReferrerHost ? "referral" : "(none)"),
+    ...(shared ? {} : campaign)
+  });
 
-  sessionStorage.setItem(STORAGE_KEYS.attribution, JSON.stringify(attribution));
+  persistAttributionContext(attribution);
   return attribution;
 }
 
@@ -140,12 +289,18 @@ function compactObject(value) {
 function buildLeadContext(input, result) {
   const attribution = getAttributionContext();
   return compactObject({
-    version: 1,
+    version: 2,
     session_id: attribution.session_id,
     captured_at: new Date().toISOString(),
     landing_page: attribution.landing_page,
+    calculator_landing_page: attribution.calculator_landing_page,
     page_path: attribution.page_path,
     referrer: attribution.referrer,
+    internal_referrer: attribution.internal_referrer,
+    first_seen_at: attribution.first_seen_at,
+    first_touch_source: attribution.source,
+    first_touch_medium: attribution.medium,
+    first_touch_campaign: attribution.utm_campaign,
     utm_source: attribution.utm_source,
     utm_medium: attribution.utm_medium,
     utm_campaign: attribution.utm_campaign,
@@ -178,11 +333,9 @@ function buildLeadContext(input, result) {
 }
 
 function persistLeadContext(context) {
-  const serialized = encodeURIComponent(JSON.stringify(context));
   sessionStorage.setItem(STORAGE_KEYS.context, JSON.stringify(context));
   window.__why57RoiContext = context;
-
-  document.cookie = `${CROSS_SUBDOMAIN_COOKIE_NAME}=${serialized}; Domain=${CROSS_SUBDOMAIN_COOKIE_DOMAIN}; Path=/; Max-Age=604800; SameSite=Lax; Secure`;
+  writeSharedCookie(CROSS_SUBDOMAIN_COOKIE_NAME, context, 60 * 60 * 24 * 7);
 }
 
 function eventDefaults() {
@@ -228,41 +381,53 @@ function trackEvent(name, detail = {}) {
   document.dispatchEvent(new CustomEvent("roi-calculator:event", { detail: payload }));
 }
 
-function trackLeadGenerated(detail = {}) {
-  let fallbackContext = null;
-  const storedContext = sessionStorage.getItem(STORAGE_KEYS.context);
-  if (storedContext) {
-    try {
-      fallbackContext = JSON.parse(storedContext);
-    } catch (_error) {
-      sessionStorage.removeItem(STORAGE_KEYS.context);
-    }
-  }
+function resultEventDetail(result, detail = {}) {
+  if (!result) return detail;
 
-  const context = latestContext || fallbackContext;
-  const payload = compactObject({
-    ...eventDefaults(),
-    recommendation: context?.recommendation,
-    readiness_score: context?.readiness_score,
-    break_even_months: context?.break_even_months,
-    project_type: context?.project_type,
-    value: context?.build_estimate_mid,
-    currency: "USD",
+  return compactObject({
+    recommendation: result.recommendation,
+    readiness_score: result.readinessScore,
+    break_even_months: result.breakEvenMonths ?? undefined,
+    project_type: latestContext?.project_type,
     ...detail
   });
+}
 
-  window.dataLayer = window.dataLayer || [];
-  window.dataLayer.push({ event: "generate_lead", ...payload });
+function markCalculatorStarted(interaction) {
+  if (hasStarted) return;
 
-  if (typeof window.gtag === "function") {
-    window.gtag("event", "generate_lead", payload);
-  }
+  hasStarted = true;
+  trackEvent(TRACKED_EVENTS.started, {
+    interaction,
+    project_type: latestContext?.project_type || collectInput().projectType
+  });
+}
 
-  if (typeof window.plausible === "function") {
-    window.plausible("generate_lead", { props: payload });
-  }
+function trackResultBucket(result) {
+  if (!hasCompleted || !result || lastTrackedBucket === result.recommendation) return;
 
-  document.dispatchEvent(new CustomEvent("roi-calculator:lead", { detail: payload }));
+  lastTrackedBucket = result.recommendation;
+  trackEvent(TRACKED_EVENTS.bucketViewed, {
+    bucket: result.recommendation,
+    readiness_score: result.readinessScore
+  });
+}
+
+function markCalculatorCompleted(completionTrigger) {
+  if (!latestResult || hasCompleted) return;
+
+  markCalculatorStarted(completionTrigger);
+  hasCompleted = true;
+  trackEvent(TRACKED_EVENTS.completed, resultEventDetail(latestResult, {
+    completion_trigger: completionTrigger,
+    steps_touched: touchedSteps.size
+  }));
+  trackResultBucket(latestResult);
+}
+
+function recordTouchedStep(target) {
+  const step = target?.closest?.(".input-group[data-step]");
+  if (step?.dataset.step !== undefined) touchedSteps.add(step.dataset.step);
 }
 
 function sendLeadCapture(eventType, detail = {}) {
@@ -299,6 +464,131 @@ function sendLeadCapture(eventType, detail = {}) {
   }).catch(() => {
     // Best-effort delivery only. The booking flow should never fail because analytics or lead capture is down.
   });
+}
+
+function publicResultContext(context) {
+  if (!context) return {};
+
+  return compactObject({
+    version: 2,
+    session_id: context.session_id,
+    captured_at: context.captured_at,
+    landing_page: context.landing_page,
+    calculator_landing_page: context.calculator_landing_page,
+    referrer: context.referrer,
+    first_seen_at: context.first_seen_at,
+    first_touch_source: context.first_touch_source,
+    first_touch_medium: context.first_touch_medium,
+    first_touch_campaign: context.first_touch_campaign,
+    utm_source: context.utm_source,
+    utm_medium: context.utm_medium,
+    utm_campaign: context.utm_campaign,
+    gclid: context.gclid,
+    gbraid: context.gbraid,
+    wbraid: context.wbraid,
+    msclkid: context.msclkid,
+    project_type: context.project_type,
+    recommendation: context.recommendation,
+    readiness_score: context.readiness_score,
+    break_even_months: context.break_even_months,
+    annual_total_current_cost: context.annual_total_current_cost,
+    build_estimate_mid: context.build_estimate_mid,
+    three_year_saas_cost: context.three_year_saas_cost,
+    three_year_custom_cost: context.three_year_custom_cost
+  });
+}
+
+async function requestLeadCapture(eventType, context, detail = {}) {
+  if (!LEAD_CAPTURE_ENDPOINT) {
+    throw new Error("missing_endpoint");
+  }
+
+  const response = await fetch(LEAD_CAPTURE_ENDPOINT, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      event_type: eventType,
+      sent_at: new Date().toISOString(),
+      context,
+      detail: compactObject(detail)
+    }),
+    mode: "cors",
+    credentials: "omit"
+  });
+
+  if (!response.ok) {
+    throw new Error(`capture_failed_${response.status}`);
+  }
+
+  return response;
+}
+
+function firstBuildPlan(recommendation) {
+  const plans = {
+    stay: {
+      title: "Optimize the current stack before building",
+      steps: [
+        "Audit overlapping tools and remove one avoidable subscription or handoff.",
+        "Document the single workaround that costs the team the most time each week.",
+        "Set a spend, workload, or growth threshold for running the build decision again."
+      ]
+    },
+    hybrid: {
+      title: "Build around the highest-friction workflow",
+      steps: [
+        "Keep the commodity systems that already work as systems of record.",
+        "Map the handoffs, duplicate entry, and reporting gap that create the most drag.",
+        "Prototype one focused bridge or workflow layer before considering replacement."
+      ]
+    },
+    custom: {
+      title: "Start with the smallest valuable custom core",
+      steps: [
+        "Define the one end-to-end workflow where ownership creates the clearest advantage.",
+        "Ship a focused first version for the smallest real user group and measure time saved.",
+        "Add integrations and edge cases in phases after the core workflow proves its ROI."
+      ]
+    }
+  };
+
+  return plans[recommendation] || plans.hybrid;
+}
+
+function shareableResult(result) {
+  const breakEven = result.breakEvenMonths ? `${result.breakEvenMonths} months` : "longer than 36 months";
+  return `${result.headline}. Readiness: ${result.readinessScore}/100. Directional break-even: ${breakEven}. Three-year paths: ${currency(result.threeYearSaaSCost)} for SaaS + workarounds vs. ${currency(result.threeYearCustomCost)} for custom + maintenance.`;
+}
+
+function shareableResultText(result) {
+  return `My 57 custom software ROI result\n\n${shareableResult(result)}\n\nThis summary excludes the worksheet inputs. Run the calculator: ${SHARE_URL}`;
+}
+
+async function copyText(value) {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await Promise.race([
+        navigator.clipboard.writeText(value),
+        new Promise((_, reject) => window.setTimeout(() => reject(new Error("clipboard_timeout")), 1_500))
+      ]);
+      return;
+    } catch (_error) {
+      // Fall through to the selection-based copy path when permission is unavailable or delayed.
+    }
+  }
+
+  const fallback = document.createElement("textarea");
+  fallback.value = value;
+  fallback.setAttribute("readonly", "");
+  fallback.style.position = "fixed";
+  fallback.style.opacity = "0";
+  document.body.appendChild(fallback);
+  fallback.select();
+  const copied = document.execCommand("copy");
+  fallback.remove();
+
+  if (!copied) throw new Error("copy_failed");
 }
 
 function getFormValue(name) {
@@ -616,6 +906,7 @@ function renderResult(result) {
   document.querySelector("#chart-saas-label").textContent = currency(result.threeYearSaaSCost);
   document.querySelector("#chart-custom-label").textContent = currency(result.threeYearCustomCost);
   document.querySelector("#cta-copy").textContent = result.cta;
+  shareSummary.textContent = shareableResult(result);
 
   const list = document.querySelector("#top-reasons");
   list.innerHTML = "";
@@ -631,12 +922,133 @@ function renderResult(result) {
 
   resultState.dataset.tone = result.recommendation;
 
-  if (lastTrackedBucket !== result.recommendation) {
-    lastTrackedBucket = result.recommendation;
-    trackEvent(TRACKED_EVENTS.bucketViewed, {
-      bucket: result.recommendation,
-      readiness_score: result.readinessScore
+}
+
+function clearFieldError(field, errorElement) {
+  field.removeAttribute("aria-invalid");
+  errorElement.textContent = "";
+}
+
+function setFieldError(field, errorElement, message) {
+  field.setAttribute("aria-invalid", "true");
+  errorElement.textContent = message;
+}
+
+function validateReportForm() {
+  const emailError = document.querySelector("#report-email-error");
+  const consentError = document.querySelector("#report-consent-error");
+  let valid = true;
+
+  clearFieldError(reportEmail, emailError);
+  clearFieldError(reportConsent, consentError);
+
+  if (!reportEmail.value.trim()) {
+    setFieldError(reportEmail, emailError, "Enter the email address where you want the result sent.");
+    valid = false;
+  } else if (!reportEmail.validity.valid) {
+    setFieldError(reportEmail, emailError, "Enter a valid email address, such as name@company.com.");
+    valid = false;
+  }
+
+  if (!reportConsent.checked) {
+    setFieldError(reportConsent, consentError, "Confirm your email consent to request the report.");
+    valid = false;
+  }
+
+  if (!valid) {
+    const firstInvalid = reportForm.querySelector('[aria-invalid="true"]');
+    firstInvalid?.focus();
+  }
+
+  return valid;
+}
+
+function setReportLoading(loading) {
+  reportSubmit.disabled = loading;
+  reportSubmit.setAttribute("aria-busy", String(loading));
+  reportSubmit.textContent = loading ? "Sending request…" : "Email me my result and plan";
+}
+
+function showReportSuccess() {
+  reportForm.hidden = true;
+  reportSuccess.hidden = false;
+  reportSuccess.focus();
+}
+
+async function handleShareResult() {
+  if (!latestResult) return;
+
+  markCalculatorCompleted("result_share");
+
+  shareStatus.textContent = "";
+  const text = shareableResultText(latestResult);
+  const analytics = {
+    recommendation: latestResult.recommendation,
+    readiness_score: latestResult.readinessScore
+  };
+
+  try {
+    if (navigator.share) {
+      await navigator.share({
+        title: "My 57 custom software ROI result",
+        text: `${shareableResult(latestResult)}\n\nThis summary excludes the worksheet inputs.`,
+        url: SHARE_URL
+      });
+      shareStatus.textContent = "Result shared.";
+      trackEvent(TRACKED_EVENTS.resultShared, { ...analytics, share_method: "native" });
+      return;
+    }
+
+    await copyText(text);
+    shareStatus.textContent = "Clean summary copied. Your worksheet inputs were not included.";
+    trackEvent(TRACKED_EVENTS.resultShared, { ...analytics, share_method: "clipboard" });
+  } catch (error) {
+    if (error?.name === "AbortError") return;
+    shareStatus.textContent = "We couldn’t copy the summary. Select the result text above and copy it manually.";
+  }
+}
+
+async function handleReportSubmit(event) {
+  event.preventDefault();
+  reportStatus.textContent = "";
+
+  const honeypot = reportForm.elements.companyWebsite.value.trim();
+  if (honeypot) {
+    showReportSuccess();
+    return;
+  }
+
+  if (!validateReportForm() || !latestContext || !latestResult) return;
+
+  setReportLoading(true);
+  const requestId = createId();
+  const formElapsedMs = Math.max(0, Date.now() - reportFormStartedAt);
+
+  try {
+    await requestLeadCapture(TRACKED_EVENTS.reportRequested, publicResultContext(latestContext), {
+      request_id: requestId,
+      email: reportEmail.value.trim(),
+      consent: true,
+      consent_version: "roi-report-v1-2026-07-15",
+      website: honeypot,
+      form_elapsed_ms: formElapsedMs,
+      result_summary: shareableResult(latestResult),
+      recommended_plan: firstBuildPlan(latestResult.recommendation)
     });
+
+    markCalculatorCompleted("report_submit");
+    trackEvent(TRACKED_EVENTS.reportRequested, {
+      recommendation: latestResult.recommendation,
+      readiness_score: latestResult.readinessScore,
+      break_even_months: latestResult.breakEvenMonths ?? undefined,
+      project_type: latestContext.project_type
+    });
+    showReportSuccess();
+  } catch (_error) {
+    reportStatus.textContent =
+      "We couldn’t send the request. Your result is still here—please try again in a moment.";
+  } finally {
+    setReportLoading(false);
   }
 }
 
@@ -654,29 +1066,21 @@ function applyDefaultsOnBlur(event) {
 function render() {
   const input = collectInput();
   const result = calculateResult(input);
+  latestResult = result;
   latestContext = buildLeadContext(input, result);
   persistLeadContext(latestContext);
   renderResult(result);
-
-  if (!hasStarted) {
-    hasStarted = true;
-    trackEvent(TRACKED_EVENTS.started, { project_type: input.projectType });
-  }
-
-  const meaningfulInputs = input.monthlySaaSSpend > 0 || input.manualHoursPerWeek > 0 || input.toolCount > 0;
-  if (meaningfulInputs && !hasCompleted) {
-    hasCompleted = true;
-    trackEvent(TRACKED_EVENTS.completed, {
-      recommendation: result.recommendation,
-      readiness_score: result.readinessScore,
-      break_even_months: result.breakEvenMonths ?? undefined,
-      project_type: input.projectType
-    });
-  }
+  trackResultBucket(result);
 }
 
-function handleInputChange() {
+function handleInputChange(event) {
+  markCalculatorStarted("input_change");
+  recordTouchedStep(event.target);
   render();
+
+  if (touchedSteps.size === stepGroups.length) {
+    markCalculatorCompleted("all_steps_changed");
+  }
 }
 
 function setCurrentStep(nextStep) {
@@ -684,40 +1088,77 @@ function setCurrentStep(nextStep) {
   updateStepUI();
 }
 
+function initMobileResultVisibility() {
+  if (!("IntersectionObserver" in window)) return;
+
+  const observer = new IntersectionObserver(
+    ([entry]) => {
+      mobileResultCta.hidden = entry.isIntersecting;
+    },
+    { threshold: 0.01 }
+  );
+
+  observer.observe(resultsPanel);
+}
+
 function initEvents() {
   form.addEventListener("input", handleInputChange);
   form.addEventListener("change", handleInputChange);
   numericInputs.forEach((input) => input.addEventListener("blur", applyDefaultsOnBlur));
-  projectTypeInputs.forEach((input) => input.addEventListener("change", handleInputChange));
 
   assumptions.addEventListener("toggle", () => {
     if (assumptions.open) {
+      markCalculatorCompleted("assumptions_opened");
       trackEvent(TRACKED_EVENTS.assumptionsOpened);
     }
   });
 
   ctaLink.addEventListener("click", () => {
-    trackLeadGenerated({ cta_location: "results_panel" });
+    markCalculatorCompleted("results_booking_click");
     trackEvent(TRACKED_EVENTS.ctaClicked, { cta_location: "results_panel" });
-    sendLeadCapture("generate_lead", { cta_location: "results_panel" });
+    trackEvent(TRACKED_EVENTS.bookingClicked, { cta_location: "results_panel" });
+    sendLeadCapture(TRACKED_EVENTS.bookingClicked, { cta_location: "results_panel", conversion_stage: "micro" });
   });
 
-  document.querySelectorAll('a[href="https://calendar.app.google/93NLV73sQd1DXuUB6"]').forEach((link) => {
+  document.querySelectorAll(`a[href="${BOOKING_URL}"]`).forEach((link) => {
     if (link === ctaLink) return;
     link.addEventListener("click", () => {
-      trackLeadGenerated({ cta_location: "page" });
       trackEvent(TRACKED_EVENTS.ctaClicked, { cta_location: "page" });
-      sendLeadCapture("generate_lead", { cta_location: "page" });
+      trackEvent(TRACKED_EVENTS.bookingClicked, { cta_location: "page" });
+      sendLeadCapture(TRACKED_EVENTS.bookingClicked, { cta_location: "page", conversion_stage: "micro" });
     });
   });
 
+  shareButton.addEventListener("click", handleShareResult);
+  reportForm.addEventListener("submit", handleReportSubmit);
+  reportEmail.addEventListener("input", () => {
+    clearFieldError(reportEmail, document.querySelector("#report-email-error"));
+    reportStatus.textContent = "";
+  });
+  reportConsent.addEventListener("change", () => {
+    clearFieldError(reportConsent, document.querySelector("#report-consent-error"));
+    reportStatus.textContent = "";
+  });
+  reportCapture.addEventListener("toggle", () => {
+    if (reportCapture.open) {
+      reportFormStartedAt = Date.now();
+      markCalculatorCompleted("report_form_opened");
+    }
+  });
+
   mobileResultCta.addEventListener("click", () => {
+    markCalculatorCompleted("mobile_result_cta");
     window.location.hash = "results";
   });
 
-  prevButton.addEventListener("click", () => setCurrentStep(currentStep - 1));
+  prevButton.addEventListener("click", () => {
+    markCalculatorStarted("step_navigation");
+    setCurrentStep(currentStep - 1);
+  });
   nextButton.addEventListener("click", () => {
+    markCalculatorStarted("step_navigation");
     if (currentStep === stepGroups.length - 1) {
+      markCalculatorCompleted("see_result");
       document.querySelector("#results").scrollIntoView({ behavior: "smooth", block: "start" });
       return;
     }
@@ -744,6 +1185,7 @@ function init() {
 
   updateStepUI();
   initEvents();
+  initMobileResultVisibility();
   render();
 
   if (window.location.hash === "#calculator" || window.location.hash === "#results") {

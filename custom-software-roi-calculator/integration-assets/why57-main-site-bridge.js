@@ -1,14 +1,22 @@
 (() => {
-  const COOKIE_NAME = "why57_roi_context";
+  const ROI_CONTEXT_COOKIE = "why57_roi_context";
+  const ATTRIBUTION_COOKIE = "why57_first_touch";
+  const COOKIE_DOMAIN = "why57.com";
   const BOOKING_URL = "https://calendar.app.google/93NLV73sQd1DXuUB6";
+  const ATTRIBUTION_MAX_AGE_SECONDS = 60 * 60 * 24 * 730;
 
   function readCookie(name) {
-    const match = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
-    return match ? match[1] : null;
+    const prefix = `${name}=`;
+    const match = document.cookie
+      .split(";")
+      .map((part) => part.trim())
+      .find((part) => part.startsWith(prefix));
+
+    return match ? match.slice(prefix.length) : null;
   }
 
-  function parseContext() {
-    const encoded = readCookie(COOKIE_NAME);
+  function parseCookie(name) {
+    const encoded = readCookie(name);
     if (!encoded) return null;
 
     try {
@@ -16,6 +24,96 @@
     } catch (_error) {
       return null;
     }
+  }
+
+  function clean(value) {
+    if (value == null) return undefined;
+    const normalized = String(value).trim();
+    return normalized || undefined;
+  }
+
+  function compact(value) {
+    return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined && entry !== ""));
+  }
+
+  function isWhy57Url(value) {
+    if (!value) return false;
+
+    try {
+      const hostname = new URL(value).hostname.toLowerCase();
+      return hostname === "why57.com" || hostname.endsWith(".why57.com");
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  function pickCampaignParams(searchParams) {
+    return compact({
+      utm_source: clean(searchParams.get("utm_source")),
+      utm_medium: clean(searchParams.get("utm_medium")),
+      utm_campaign: clean(searchParams.get("utm_campaign")),
+      utm_content: clean(searchParams.get("utm_content")),
+      utm_term: clean(searchParams.get("utm_term")),
+      gclid: clean(searchParams.get("gclid")),
+      gbraid: clean(searchParams.get("gbraid")),
+      wbraid: clean(searchParams.get("wbraid")),
+      msclkid: clean(searchParams.get("msclkid"))
+    });
+  }
+
+  function withoutInternalCampaign(campaign, internalReferral) {
+    if (!internalReferral) return campaign;
+
+    const source = campaign.utm_source?.toLowerCase();
+    const internalSources = new Set(["57", "why57", "why57.com", "roi.why57.com", "internal", "website"]);
+    if (!source || !internalSources.has(source)) return campaign;
+
+    return compact({
+      gclid: campaign.gclid,
+      gbraid: campaign.gbraid,
+      wbraid: campaign.wbraid,
+      msclkid: campaign.msclkid
+    });
+  }
+
+  function writeAttributionCookie(attribution) {
+    const encoded = encodeURIComponent(JSON.stringify(attribution));
+    document.cookie = `${ATTRIBUTION_COOKIE}=${encoded}; Domain=${COOKIE_DOMAIN}; Path=/; Max-Age=${ATTRIBUTION_MAX_AGE_SECONDS}; SameSite=Lax; Secure`;
+  }
+
+  function preserveOriginalAcquisition() {
+    const existing = parseCookie(ATTRIBUTION_COOKIE);
+    if ((existing?.captured_at || existing?.first_seen_at) && existing?.landing_page) return existing;
+
+    const referrer = clean(document.referrer);
+    const internalReferral = isWhy57Url(referrer);
+    const campaign = withoutInternalCampaign(
+      pickCampaignParams(new URLSearchParams(window.location.search)),
+      internalReferral
+    );
+    let referrerHost;
+    try {
+      referrerHost = referrer && !internalReferral ? new URL(referrer).hostname.toLowerCase() : undefined;
+    } catch (_error) {
+      referrerHost = undefined;
+    }
+    const paidSearchSource = campaign.gclid || campaign.gbraid || campaign.wbraid
+      ? "google"
+      : campaign.msclkid
+        ? "bing"
+        : undefined;
+    const acquisition = compact({
+      version: 2,
+      captured_at: new Date().toISOString(),
+      landing_page: `${window.location.pathname}${window.location.hash}`,
+      referrer_host: referrerHost,
+      source: campaign.utm_source || paidSearchSource || referrerHost || "(direct)",
+      medium: campaign.utm_medium || (paidSearchSource ? "cpc" : referrerHost ? "referral" : "(none)"),
+      ...campaign
+    });
+
+    writeAttributionCookie(acquisition);
+    return acquisition;
   }
 
   function pushContextEvent(context) {
@@ -44,7 +142,8 @@
     });
   }
 
-  const context = parseContext();
+  preserveOriginalAcquisition();
+  const context = parseCookie(ROI_CONTEXT_COOKIE);
   pushContextEvent(context);
   annotateBookingLinks(context);
 })();

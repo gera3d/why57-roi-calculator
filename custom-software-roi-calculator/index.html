@@ -45,6 +45,8 @@
         ga4MeasurementId: "G-358H0FHG50",
         crossSubdomainCookieDomain: "why57.com",
         crossSubdomainCookieName: "why57_roi_context",
+        attributionCookieName: "why57_first_touch",
+        linkerDomains: ["why57.com", "roi.why57.com"],
         leadCaptureEndpoint: "https://why57-roi-intake.gera-695.workers.dev/"
       };
       window.dataLayer = window.dataLayer || [];
@@ -52,6 +54,11 @@
         window.dataLayer.push(arguments);
       }
       window.gtag = window.gtag || gtag;
+      window.gtag("set", "linker", {
+        domains: window.ROI_INTEGRATIONS.linkerDomains,
+        accept_incoming: true,
+        decorate_forms: true
+      });
       window.gtag("js", new Date());
       window.gtag("config", window.ROI_INTEGRATIONS.ga4MeasurementId, {
         send_page_view: true
@@ -516,6 +523,76 @@
                   </div>
                 </div>
               </div>
+
+              <section class="share-panel" aria-labelledby="share-title">
+                <h3 id="share-title">Share a clean result summary</h3>
+                <p id="share-summary"></p>
+                <p class="share-privacy">Your worksheet inputs and contact details are never included.</p>
+                <button class="button button-secondary button-block" id="share-result" type="button">
+                  Share result
+                </button>
+                <p class="action-status" id="share-status" role="status" aria-live="polite"></p>
+              </section>
+
+              <details class="report-capture" id="report-capture">
+                <summary>Email me my result and recommended first-build plan</summary>
+                <div class="report-capture-body">
+                  <p>
+                    Get this result plus a focused three-step plan for what to validate or build first. The calculator
+                    stays fully ungated.
+                  </p>
+                  <form id="report-form" novalidate>
+                    <label for="report-email">
+                      <span>Work email</span>
+                      <input
+                        id="report-email"
+                        name="email"
+                        type="email"
+                        inputmode="email"
+                        autocomplete="email"
+                        aria-describedby="report-email-error"
+                        required
+                      />
+                    </label>
+                    <p class="field-error" id="report-email-error"></p>
+
+                    <div class="honeypot-field" aria-hidden="true" inert>
+                      <label for="company-website">Company website</label>
+                      <input
+                        id="company-website"
+                        name="companyWebsite"
+                        type="text"
+                        tabindex="-1"
+                        autocomplete="off"
+                      />
+                    </div>
+
+                    <label class="consent-field" for="report-consent">
+                      <input
+                        id="report-consent"
+                        name="consent"
+                        type="checkbox"
+                        aria-describedby="report-consent-error report-privacy"
+                        required
+                      />
+                      <span>I agree that 57 may email this result, the recommended plan, and one relevant follow-up.</span>
+                    </label>
+                    <p class="field-error" id="report-consent-error"></p>
+                    <p class="privacy-note" id="report-privacy">
+                      We use your email only for this request and related follow-up, never sell it, and honor unsubscribe
+                      requests.
+                    </p>
+                    <button class="button button-primary button-block" id="report-submit" type="submit">
+                      Email me my result and plan
+                    </button>
+                    <p class="action-status" id="report-form-status" role="status" aria-live="polite"></p>
+                  </form>
+                  <div class="report-success" id="report-success" role="status" tabindex="-1" hidden>
+                    <strong>Request received.</strong>
+                    <p>We’ll use the email you provided to send your result and recommended first-build plan.</p>
+                  </div>
+                </div>
+              </details>
 
               <div class="cta-panel">
                 <p id="cta-copy">

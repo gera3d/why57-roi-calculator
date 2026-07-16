@@ -1,99 +1,85 @@
 # ROI Calculator Integrations
 
-The ROI calculator is now wired to the same GA4 property used on `why57.com`:
+## Front-end configuration
 
-- `G-358H0FHG50`
+`window.ROI_INTEGRATIONS` in `index.html` is the only front-end configuration surface:
 
-The page loads the Google tag directly and the calculator emits:
+- `ga4MeasurementId`: GA4 property used by the calculator
+- `crossSubdomainCookieDomain`: shared parent domain (`why57.com`)
+- `crossSubdomainCookieName`: seven-day calculator result context cookie
+- `attributionCookieName`: two-year, first-touch acquisition cookie shared by `why57.com` and `roi.why57.com`
+- `linkerDomains`: GA4 cross-domain linker domains shared with the main site
+- `leadCaptureEndpoint`: existing JSON intake URL for booking and report requests
+
+No email provider credentials, webhook secrets, or other secrets belong in this object.
+
+## Analytics events
+
+The calculator pushes flat events to `dataLayer`, GA4, and the existing custom DOM event bridge:
 
 - `calculator_started`
 - `calculator_completed`
 - `result_bucket_viewed`
 - `assumptions_opened`
-- `cta_clicked`
-- `generate_lead`
+- `roi_result_shared`
+- `roi_report_requested` (only after the intake returns a successful response)
+- `calendar_booking_clicked` (a micro-conversion, not a completed lead)
+- `cta_clicked` (kept for existing dashboards)
 
-Each event is enriched with attribution and result context when available, including:
+Analytics payloads never include the submitted email address or worksheet inputs.
 
-- `session_id`
-- `utm_source`
-- `utm_medium`
-- `utm_campaign`
-- `project_type`
-- `recommendation`
-- `readiness_score`
-- `break_even_months`
+`calculator_started` fires once after the first intentional form or step-navigation interaction. It never fires from the initial default render. `calculator_completed` fires once only after an explicit result action (`See result`, result share, report form, result assumptions, or result booking) or after the visitor has intentionally changed at least one field in all four calculator steps. Its payload includes `completion_trigger` and `steps_touched`. `result_bucket_viewed` begins only after that completion boundary and can fire again only if a later change moves the completed calculator into a different recommendation bucket.
 
-## Cross-site handoff
+## Original acquisition across subdomains
 
-The calculator also writes a first-party cookie on `.why57.com`:
+The `why57_first_touch` cookie preserves the first landing page, external referrer, first-seen time, source, medium, external campaign values, and ad click IDs for up to two years. The calculator reads that cookie before looking at its own landing URL, so moving between `why57.com` and `roi.why57.com` does not replace the original acquisition with an internal referral.
 
-- Cookie name: `why57_roi_context`
-- Lifetime: 7 days
+The main site's shared `analytics.js` initializes the same cookie for visitors who start there. The bridge asset at `integration-assets/why57-main-site-bridge.js` remains available only for ROI-result personalization on older main-site deployments. Internal links do not need UTM parameters. If an old internal link still uses an internal `utm_source` value such as `why57`, `website`, or `internal`, it is ignored when the referrer is another Why57 subdomain. External UTM and ad click IDs are still captured.
 
-The cookie contains a compact JSON payload with the latest calculator result and attribution context so the main site, a future booking page, or a backend endpoint can read it and attach ROI context to leads.
+Both pages also configure the same GA4 linker domains in code. After deployment, verify the GA4 Admin cross-domain settings include the Why57 domains and run a live main-site-to-ROI navigation test. Confirm the linker is accepted, one user/session continues across the subdomain boundary, and `why57.com` is not recorded as an ROI referral.
 
-## Lead capture endpoint
+The result cookie remains separate and contains the latest calculator context for booking personalization.
 
-The calculator now sends a best-effort JSON POST on booking CTA clicks to:
+## Optional report request
 
-- `https://why57-roi-intake.gera-695.workers.dev/`
+The calculator remains ungated. After seeing the live result, a visitor may expand “Email me my result and recommended first-build plan” and submit:
 
-The endpoint is configured in [index.html](/Users/gerayeremin/Documents/New%20project/custom-software-roi-calculator/index.html) through:
+- work email
+- explicit email consent and consent-copy version
+- result bucket, score, break-even, high-level cost comparison, and project type
+- a bucket-specific recommended three-step plan
+- original acquisition context
+- a request ID and form elapsed time
+- an empty honeypot field
 
-- `window.ROI_INTEGRATIONS.leadCaptureEndpoint`
+The report request intentionally omits raw monthly spend, hourly team cost, user count, tool count, and other worksheet fields. The share action is even narrower: it includes only the recommendation headline, readiness score, directional break-even, three-year comparison, and the canonical calculator URL.
 
-Each request contains:
+The UI includes custom validation plus loading, server error, and success states. A request is considered successful only when the configured endpoint returns a 2xx response.
 
-- `event_type`
-- `sent_at`
-- `context`
-- `detail`
+## Endpoint contract and spam protection
 
-The booking flow does not block on this request.
+`integration-assets/lead-capture-endpoint.example.mjs` documents the compatible server pattern. It accepts `calendar_booking_clicked` and the completed `roi_report_requested` event at the same JSON endpoint.
 
-## Remaining account-side setup
+The example enforces:
 
-The core setup is now live and completed:
+- production origin allowlist and CORS
+- supported event allowlist
+- request-size limit
+- honeypot handling
+- minimum form-fill time
+- server-side email and consent validation
+- redacted logs when report delivery is not configured
+- non-2xx response when email delivery is unavailable
 
-1. GA4
-   The calculator uses the same GA4 property as `why57.com`, and the related custom dimensions, custom metrics, and `generate_lead` key event are already configured in GA4 admin.
+Production should also apply rate limiting at the edge and idempotency on `request_id` using the storage already available to the intake service. Those controls are environment-specific and are not fabricated in the static calculator.
 
-2. Server-side lead capture
-   The Cloudflare Worker at `why57-roi-intake.gera-695.workers.dev` is live and storing normalized lead context in KV.
+## Credential-dependent setup
 
-3. Main-site bridge
-   `why57.com` reads the shared cookie, renders personalized handoff copy, and sends server-side lead context again on booking CTA clicks.
+The browser code and repository do not contain email delivery credentials. To make the request produce an email, the existing intake service must implement the example contract and set:
 
-## Optional next layers
+- `ROI_REPORT_WEBHOOK_URL`: CRM, automation, or transactional-email workflow that accepts the normalized report payload
+- `ROI_FORWARD_WEBHOOK_SECRET`: optional bearer secret expected by that workflow
 
-These are optional upgrades, not blockers:
+`ROI_FORWARD_WEBHOOK_URL` remains optional for booking-event forwarding. Keep all values server-side.
 
-1. CRM or webhook forwarding
-   The Worker supports forwarding normalized payloads through `ROI_FORWARD_WEBHOOK_URL` and `ROI_FORWARD_WEBHOOK_SECRET`, but no external CRM is attached by default.
-
-2. GTM or additional tags
-   The calculator already pushes flat event objects to `dataLayer`, so a future GTM container can route the same events to Google Ads, Meta, or other tools without changing calculator logic.
-
-3. Session replay / UX tooling
-   If you add Microsoft Clarity or another replay tool later, keep the same session and attribution fields aligned with the calculator events.
-
-## Ready-to-use assets
-
-Two helper assets are included in this repo:
-
-- [why57-main-site-bridge.js](/Users/gerayeremin/Documents/New%20project/custom-software-roi-calculator/integration-assets/why57-main-site-bridge.js)
-- [lead-capture-endpoint.example.mjs](/Users/gerayeremin/Documents/New%20project/custom-software-roi-calculator/integration-assets/lead-capture-endpoint.example.mjs)
-
-The Worker source is versioned in the main-site repo at:
-
-- [worker.js](/Users/gerayeremin/Documents/New%20project/why57/cloudflare/why57-roi-intake/worker.js)
-- [ROI-INTEGRATION.md](/Users/gerayeremin/Documents/New%20project/why57/ROI-INTEGRATION.md)
-
-## Verification summary
-
-As of April 4, 2026:
-
-- `https://why57-roi-intake.gera-695.workers.dev/` returns a healthy JSON response
-- POSTs from both `https://roi.why57.com` and `https://why57.com` are accepted and stored
-- the live frontend endpoint is wired through [index.html](/Users/gerayeremin/Documents/New%20project/custom-software-roi-calculator/index.html)
+Until the report webhook and template are configured in the deployed intake service, the front end can be tested with a mocked 2xx response, but production report delivery is not complete.

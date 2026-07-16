@@ -1,9 +1,9 @@
 (() => {
   const ROI_CONTEXT_COOKIE = "why57_roi_context";
-  const ATTRIBUTION_COOKIE = "why57_acquisition";
+  const ATTRIBUTION_COOKIE = "why57_first_touch";
   const COOKIE_DOMAIN = "why57.com";
   const BOOKING_URL = "https://calendar.app.google/93NLV73sQd1DXuUB6";
-  const ATTRIBUTION_MAX_AGE_SECONDS = 60 * 60 * 24 * 90;
+  const ATTRIBUTION_MAX_AGE_SECONDS = 60 * 60 * 24 * 730;
 
   function readCookie(name) {
     const prefix = `${name}=`;
@@ -83,7 +83,7 @@
 
   function preserveOriginalAcquisition() {
     const existing = parseCookie(ATTRIBUTION_COOKIE);
-    if (existing?.first_seen_at && existing?.landing_page) return existing;
+    if ((existing?.captured_at || existing?.first_seen_at) && existing?.landing_page) return existing;
 
     const referrer = clean(document.referrer);
     const internalReferral = isWhy57Url(referrer);
@@ -91,11 +91,24 @@
       pickCampaignParams(new URLSearchParams(window.location.search)),
       internalReferral
     );
+    let referrerHost;
+    try {
+      referrerHost = referrer && !internalReferral ? new URL(referrer).hostname.toLowerCase() : undefined;
+    } catch (_error) {
+      referrerHost = undefined;
+    }
+    const paidSearchSource = campaign.gclid || campaign.gbraid || campaign.wbraid
+      ? "google"
+      : campaign.msclkid
+        ? "bing"
+        : undefined;
     const acquisition = compact({
       version: 2,
-      landing_page: window.location.href,
-      referrer: internalReferral ? undefined : referrer,
-      first_seen_at: new Date().toISOString(),
+      captured_at: new Date().toISOString(),
+      landing_page: `${window.location.pathname}${window.location.hash}`,
+      referrer_host: referrerHost,
+      source: campaign.utm_source || paidSearchSource || referrerHost || "(direct)",
+      medium: campaign.utm_medium || (paidSearchSource ? "cpc" : referrerHost ? "referral" : "(none)"),
       ...campaign
     });
 

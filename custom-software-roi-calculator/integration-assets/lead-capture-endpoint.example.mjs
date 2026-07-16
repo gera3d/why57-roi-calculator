@@ -1,5 +1,5 @@
 const ALLOWED_ORIGINS = new Set(["https://roi.why57.com", "https://why57.com"]);
-const ALLOWED_EVENTS = new Set(["generate_lead", "roi_report_requested"]);
+const ALLOWED_EVENTS = new Set(["calendar_booking_clicked", "roi_report_requested"]);
 const MAX_BODY_BYTES = 32_768;
 const MIN_REPORT_FORM_TIME_MS = 1_500;
 

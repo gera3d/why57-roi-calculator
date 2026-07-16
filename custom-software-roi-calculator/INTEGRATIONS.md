@@ -7,7 +7,7 @@
 - `ga4MeasurementId`: GA4 property used by the calculator
 - `crossSubdomainCookieDomain`: shared parent domain (`why57.com`)
 - `crossSubdomainCookieName`: seven-day calculator result context cookie
-- `attributionCookieName`: 90-day, first-touch acquisition cookie shared by `why57.com` and `roi.why57.com`
+- `attributionCookieName`: two-year, first-touch acquisition cookie shared by `why57.com` and `roi.why57.com`
 - `leadCaptureEndpoint`: existing JSON intake URL for booking and report requests
 
 No email provider credentials, webhook secrets, or other secrets belong in this object.
@@ -22,17 +22,16 @@ The calculator pushes flat events to `dataLayer`, GA4, and the existing custom D
 - `assumptions_opened`
 - `roi_result_shared`
 - `roi_report_requested` (only after the intake returns a successful response)
-- `booking_clicked`
+- `calendar_booking_clicked` (a micro-conversion, not a completed lead)
 - `cta_clicked` (kept for existing dashboards)
-- `generate_lead`
 
 Analytics payloads never include the submitted email address or worksheet inputs.
 
 ## Original acquisition across subdomains
 
-The `why57_acquisition` cookie preserves the first landing page, external referrer, first-seen time, external campaign values, and ad click IDs for 90 days. The calculator reads that cookie before looking at its own landing URL, so moving between `why57.com` and `roi.why57.com` does not replace the original acquisition with an internal referral.
+The `why57_first_touch` cookie preserves the first landing page, external referrer, first-seen time, source, medium, external campaign values, and ad click IDs for up to two years. The calculator reads that cookie before looking at its own landing URL, so moving between `why57.com` and `roi.why57.com` does not replace the original acquisition with an internal referral.
 
-The bridge asset at `integration-assets/why57-main-site-bridge.js` must be loaded on the main site to initialize the shared cookie for visitors who start there. Internal links do not need UTM parameters. If an old internal link still uses an internal `utm_source` value such as `why57`, `website`, or `internal`, it is ignored when the referrer is another Why57 subdomain. External UTM and ad click IDs are still captured.
+The main site's shared `analytics.js` initializes the same cookie for visitors who start there. The bridge asset at `integration-assets/why57-main-site-bridge.js` remains available only for ROI-result personalization on older main-site deployments. Internal links do not need UTM parameters. If an old internal link still uses an internal `utm_source` value such as `why57`, `website`, or `internal`, it is ignored when the referrer is another Why57 subdomain. External UTM and ad click IDs are still captured.
 
 The result cookie remains separate and contains the latest calculator context for booking personalization.
 
@@ -54,7 +53,7 @@ The UI includes custom validation plus loading, server error, and success states
 
 ## Endpoint contract and spam protection
 
-`integration-assets/lead-capture-endpoint.example.mjs` documents the compatible server pattern. It accepts the existing booking event and the new `roi_report_requested` event at the same JSON endpoint.
+`integration-assets/lead-capture-endpoint.example.mjs` documents the compatible server pattern. It accepts `calendar_booking_clicked` and the completed `roi_report_requested` event at the same JSON endpoint.
 
 The example enforces:
 

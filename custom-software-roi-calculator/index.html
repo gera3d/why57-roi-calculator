@@ -41,13 +41,18 @@
     />
     <script async src="https://www.googletagmanager.com/gtag/js?id=G-358H0FHG50"></script>
     <script>
+      const why57LocalLeadIntake = ["localhost", "127.0.0.1"].includes(window.location.hostname);
       window.ROI_INTEGRATIONS = {
         ga4MeasurementId: "G-358H0FHG50",
         crossSubdomainCookieDomain: "why57.com",
         crossSubdomainCookieName: "why57_roi_context",
         attributionCookieName: "why57_first_touch",
         linkerDomains: ["why57.com", "roi.why57.com"],
-        leadCaptureEndpoint: "https://why57-roi-intake.gera-695.workers.dev/"
+        leadCaptureEndpoint: "https://why57-roi-intake.gera-695.workers.dev/",
+        identifiedLeadIntake: {
+          enabled: why57LocalLeadIntake,
+          endpoint: why57LocalLeadIntake ? "http://127.0.0.1:8787/v1/leads" : ""
+        }
       };
       window.dataLayer = window.dataLayer || [];
       function gtag() {
@@ -542,6 +547,19 @@
                     stays fully ungated.
                   </p>
                   <form id="report-form" novalidate>
+                    <label for="report-name" id="report-name-field" hidden>
+                      <span>Name</span>
+                      <input
+                        id="report-name"
+                        name="name"
+                        type="text"
+                        autocomplete="name"
+                        maxlength="120"
+                        aria-describedby="report-name-error"
+                      />
+                    </label>
+                    <p class="field-error" id="report-name-error" hidden></p>
+
                     <label for="report-email">
                       <span>Work email</span>
                       <input
